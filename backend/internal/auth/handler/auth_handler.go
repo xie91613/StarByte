@@ -1,0 +1,438 @@
+package handler
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/Yogdunana/StarByte/backend/internal/auth/dto"
+	"github.com/Yogdunana/StarByte/backend/internal/auth/service"
+	rbacService "github.com/Yogdunana/StarByte/backend/internal/rbac/service"
+	authmiddleware "github.com/Yogdunana/StarByte/backend/pkg/middleware/auth"
+	"github.com/Yogdunana/StarByte/backend/pkg/response"
+	"github.com/gin-gonic/gin"
+)
+
+// AuthHandler handles authentication-related HTTP requests.
+type AuthHandler struct {
+	authService service.AuthService
+}
+
+// NewAuthHandler creates a new AuthHandler.
+func NewAuthHandler(authService service.AuthService) *AuthHandler {
+	return &AuthHandler{authService: authService}
+}
+
+// Login handles POST /api/v1/auth/login
+// @Summary 用户登录
+// @Description 用户名或学号 + 密码登录，返回 Access Token、Refresh Token 以及含学号/姓名的用户信息
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Param request body dto.LoginRequest true "登录信息"
+// @Success 200 {object} response.Response{data=dto.LoginResponse}
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/login [post]
+func (h *AuthHandler) Login(c *gin.Context) {
+	var req dto.LoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	ip := c.ClientIP()
+	userAgent := c.GetHeader("User-Agent")
+	result, err := h.authService.Login(c.Request.Context(), &req, ip, userAgent)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.OK(c, result)
+}
+
+// RefreshToken handles POST /api/v1/auth/refresh
+// @Summary 刷新 Token
+// @Description 使用 Refresh Token 刷新 Access Token（旋转机制：旧 Refresh Token 失效）
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Param request body dto.RefreshTokenRequest true "Refresh Token"
+// @Success 200 {object} response.Response{data=dto.RefreshResponse}
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/refresh [post]
+func (h *AuthHandler) RefreshToken(c *gin.Context) {
+	var req dto.RefreshTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	result, err := h.authService.RefreshToken(c.Request.Context(), &req, c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.OK(c, result)
+}
+
+// Logout handles POST /api/v1/auth/logout
+// @Summary 用户登出
+// @Description 退出登录，使当前 Access Token 加入黑名单，Refresh Token 失效
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body dto.LogoutRequest false "登出信息（refresh_token 可选）"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/logout [post]
+func (h *AuthHandler) Logout(c *gin.Context) {
+	userID := authmiddleware.GetUserID(c)
+	tokenID := authmiddleware.GetTokenID(c)
+
+	var req dto.LogoutRequest
+	_ = c.ShouldBindJSON(&req) // best-effort: body is optional
+
+	err := h.authService.Logout(c.Request.Context(), userID, tokenID, req.RefreshToken)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.OKWithoutData(c)
+}
+
+// GetCurrentUser handles GET /api/v1/auth/me
+// @Summary 获取当前用户信息
+// @Description 获取当前登录用户的详细信息（含角色、权限、学号、姓名、年级、专业、部门）
+// @Tags 认证
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} response.Response{data=dto.UserInfo}
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/me [get]
+func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
+	userID := authmiddleware.GetUserID(c)
+
+	result, err := h.authService.GetCurrentUser(c.Request.Context(), userID)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.OK(c, result)
+}
+
+// ChangePassword handles PUT /api/v1/auth/password
+// @Summary 修改密码
+// @Description 修改当前用户的密码（需校验原密码，新密码需满足强度要求）
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body dto.ChangePasswordRequest true "密码信息"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/password [put]
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	userID := authmiddleware.GetUserID(c)
+
+	var req dto.ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+
+	err := h.authService.ChangePassword(c.Request.Context(), userID, &req)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+
+	response.OKWithoutData(c)
+}
+
+// WechatQRCode handles POST /api/v1/auth/wechat/qrcode
+// @Summary 获取微信登录二维码（预留）
+// @Description 返回微信扫码登录二维码链接（接口预留，一期不实现）
+// @Tags 认证
+// @Produce json
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/wechat/qrcode [post]
+// @Security BearerAuth
+func (h *AuthHandler) WechatQRCode(c *gin.Context) {
+	response.NotImplemented(c, "微信扫码登录功能暂未开通")
+}
+
+// WechatCallback handles POST /api/v1/auth/wechat/callback
+// @Summary 微信登录回调（预留）
+// @Description 微信扫码登录回调接口（接口预留，一期不实现）
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Param request body dto.WechatLoginRequest true "微信授权码"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/wechat/callback [post]
+// @Security BearerAuth
+func (h *AuthHandler) WechatCallback(c *gin.Context) {
+	response.NotImplemented(c, "微信登录回调功能暂未开通")
+}
+
+// OAuthLogin handles POST /api/v1/auth/oauth/{provider}
+// @Summary 第三方 OAuth 登录（预留）
+// @Description 通用第三方 OAuth 登录接口（接口预留，一期不实现）
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Param provider path string true "OAuth 提供者（github/google 等）"
+// @Param request body dto.OAuthLoginRequest true "OAuth 授权码"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.Response
+// @Failure 401 {object} response.Response
+// @Router /auth/oauth/{provider} [post]
+// @Security BearerAuth
+func (h *AuthHandler) OAuthLogin(c *gin.Context) {
+	provider := c.Param("provider")
+	if provider == "" {
+		response.NotImplemented(c, "第三方 OAuth 登录功能暂未开通")
+		return
+	}
+	response.NotImplemented(c, "第三方 OAuth 登录功能暂未开通: "+provider)
+}
+
+// CASStatus handles GET /api/v1/auth/cas/status
+// @Summary 学校统一认证是否开通
+// @Tags 认证
+// @Produce json
+// @Success 200 {object} response.Response{data=dto.CASStatusResponse}
+// @Router /auth/cas/status [get]
+func (h *AuthHandler) CASStatus(c *gin.Context) {
+	setCASReferrerPolicy(c)
+	if h.authService == nil {
+		response.OK(c, dto.CASStatusResponse{Enabled: false})
+		return
+	}
+	response.OK(c, h.authService.CASStatus())
+}
+
+// CASLogin handles GET /api/v1/auth/cas/login
+// @Summary 跳转学校 CAS 登录
+// @Description 重定向到 authserver.smbu.edu.cn，service 为备案回调地址
+// @Tags 认证
+// @Param redirect query string false "登录成功后的前端相对路径"
+// @Success 302 {string} string "Redirect"
+// @Router /auth/cas/login [get]
+func (h *AuthHandler) CASLogin(c *gin.Context) {
+	setCASReferrerPolicy(c)
+	if h.authService == nil {
+		response.NotImplemented(c, "学校统一认证暂未开通")
+		return
+	}
+	origin := requestPublicOrigin(c)
+	start, err := h.authService.BuildCASLoginURL(c.Request.Context(), c.Query("redirect"), origin)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	secure := strings.HasPrefix(origin, "https://")
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     casStateCookie,
+		Value:    start.State,
+		Path:     "/",
+		MaxAge:   600,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	// Gin 的 302 会附带一段 <a href> HTML；Referrer-Policy 同时约束自动跳转与该回退页。
+	c.Redirect(http.StatusFound, start.Location)
+}
+
+// CASCallback handles GET /api/v1/auth/cas/callback
+// @Summary CAS 验票回调
+// @Description 校验 Service Ticket 后重定向到前端 /login/cas?code=
+// @Tags 认证
+// @Param ticket query string true "CAS Service Ticket"
+// @Param state query string true "登录态"
+// @Success 302 {string} string "Redirect"
+// @Router /auth/cas/callback [get]
+func (h *AuthHandler) CASCallback(c *gin.Context) {
+	setCASReferrerPolicy(c)
+	if h.authService == nil {
+		response.NotImplemented(c, "学校统一认证暂未开通")
+		return
+	}
+	state := c.Query("state")
+	if ck, err := c.Request.Cookie(casStateCookie); err == nil && ck.Value != "" {
+		state = ck.Value
+	}
+	http.SetCookie(c.Writer, &http.Cookie{Name: casStateCookie, Path: "/", MaxAge: -1})
+	loc, err := h.authService.CompleteCASCallback(
+		c.Request.Context(),
+		c.Query("ticket"),
+		state,
+		c.ClientIP(),
+		c.GetHeader("User-Agent"),
+		requestPublicOrigin(c),
+	)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	c.Redirect(http.StatusFound, loc)
+}
+
+// CASExchange handles POST /api/v1/auth/cas/exchange
+// @Summary 兑换 CAS 一次性登录码
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Param request body dto.CASExchangeRequest true "一次性 code"
+// @Success 200 {object} response.Response{data=dto.CASExchangeResponse}
+// @Failure 400 {object} response.Response
+// @Router /auth/cas/exchange [post]
+func (h *AuthHandler) CASExchange(c *gin.Context) {
+	setCASReferrerPolicy(c)
+	if h.authService == nil {
+		response.NotImplemented(c, "学校统一认证暂未开通")
+		return
+	}
+	var req dto.CASExchangeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	result, err := h.authService.ExchangeCASCode(c.Request.Context(), req.Code)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// CASRegister handles POST /api/v1/auth/cas/register
+// @Summary 用 CAS 续传凭证注册并绑定学号
+// @Description 校验一次性 registration_token 后创建本地账号、写入学号并绑定 CAS 身份，返回 JWT
+// @Tags 认证
+// @Accept json
+// @Produce json
+// @Param request body dto.CASRegisterRequest true "注册信息"
+// @Success 200 {object} response.Response{data=dto.CASExchangeResponse}
+// @Failure 400 {object} response.Response
+// @Router /auth/cas/register [post]
+func (h *AuthHandler) CASRegister(c *gin.Context) {
+	setCASReferrerPolicy(c)
+	if h.authService == nil {
+		response.NotImplemented(c, "学校统一认证暂未开通")
+		return
+	}
+	var req dto.CASRegisterRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	result, err := h.authService.RegisterWithCASToken(
+		c.Request.Context(),
+		&req,
+		c.ClientIP(),
+		c.GetHeader("User-Agent"),
+	)
+	if err != nil {
+		response.Error(c, err)
+		return
+	}
+	response.OK(c, result)
+}
+
+// RegisterRoutes registers all authentication routes.
+// public routes (no auth): login, refresh, wechat, oauth
+// protected routes (auth): logout, me, password, sessions
+// loginRateLimiter is an optional middleware applied to the login endpoint
+// for brute-force protection (e.g., 5 req/min). Pass nil to skip.
+// cacheService is required to register session admin routes; pass nil to skip.
+func RegisterRoutes(
+	public *gin.RouterGroup,
+	protected *gin.RouterGroup,
+	handler *AuthHandler,
+	loginRateLimiter gin.HandlerFunc,
+	cacheService rbacService.PermissionCacheService,
+) {
+	if public != nil {
+		authGroup := public.Group("/auth")
+		{
+			if loginRateLimiter != nil {
+				authGroup.POST("/login", loginRateLimiter, handler.Login)
+			} else {
+				authGroup.POST("/login", handler.Login)
+			}
+			authGroup.POST("/refresh", handler.RefreshToken)
+			authGroup.POST("/wechat/qrcode", handler.WechatQRCode)
+			authGroup.POST("/wechat/callback", handler.WechatCallback)
+			authGroup.POST("/oauth/:provider", handler.OAuthLogin)
+			authGroup.GET("/cas/status", handler.CASStatus)
+			authGroup.GET("/cas/login", handler.CASLogin)
+			authGroup.GET("/cas/callback", handler.CASCallback)
+			if loginRateLimiter != nil {
+				authGroup.POST("/cas/exchange", loginRateLimiter, handler.CASExchange)
+				authGroup.POST("/cas/register", loginRateLimiter, handler.CASRegister)
+			} else {
+				authGroup.POST("/cas/exchange", handler.CASExchange)
+				authGroup.POST("/cas/register", handler.CASRegister)
+			}
+		}
+	}
+
+	if protected != nil {
+		authProtected := protected.Group("/auth")
+		{
+			authProtected.POST("/logout", handler.Logout)
+			authProtected.GET("/me", handler.GetCurrentUser)
+			authProtected.PUT("/password", handler.ChangePassword)
+			registerSessionRoutes(authProtected, handler, cacheService)
+		}
+	}
+}
+
+const (
+	casStateCookie    = "starbyte_cas_state"
+	casReferrerPolicy = "no-referrer"
+)
+
+// setCASReferrerPolicy 禁止浏览器把本站 Origin 当作 Referer 带给 authserver。
+// 校园网 openresty 对带 Referer: http://<站点>/ 的 /authserver/login 返回 404。
+func setCASReferrerPolicy(c *gin.Context) {
+	c.Header("Referrer-Policy", casReferrerPolicy)
+}
+
+func requestPublicOrigin(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	proto := strings.TrimSpace(c.GetHeader("X-Forwarded-Proto"))
+	if i := strings.Index(proto, ","); i >= 0 {
+		proto = strings.TrimSpace(proto[:i])
+	}
+	if proto == "" {
+		if c.Request.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
+	}
+	// 不读客户端 X-Forwarded-Host：前端 nginx 不会覆盖它，伪造 Host 会把一次性 code 重定向走。
+	host := strings.TrimSpace(c.Request.Host)
+	if proto == "" || host == "" {
+		return ""
+	}
+	return proto + "://" + host
+}
