@@ -1,0 +1,78 @@
+# Production environment overrides
+# Loaded on top of config.yaml when APP_ENV=prod
+#
+# IMPORTANT: Sensitive values (database password, JWT secret, MinIO keys)
+# should be injected via environment variables, NOT hardcoded here.
+# See backend/.env.example for the full list of supported variables.
+
+server:
+  mode: release
+  read_timeout: 15
+  write_timeout: 15
+
+database:
+  host: ""  # Set via DB_HOST environment variable
+  port: 5432
+  user: ""  # Set via DB_USER environment variable
+  password: ""  # Set via DB_PASSWORD environment variable
+  dbname: starbyte
+  sslmode: require
+  max_open: 100
+  max_idle: 20
+
+redis:
+  host: ""  # Set via REDIS_HOST environment variable
+  port: 6379
+  password: ""  # Set via REDIS_PASSWORD environment variable
+  db: 0
+
+jwt:
+  secret: ""  # Set via JWT_SECRET environment variable
+  access_token_exp: 3600
+  refresh_token_exp: 604800
+
+logger:
+  level: info
+  format: json
+  filename: logs/starbyte.log
+  max_size: 200
+  max_backups: 10
+  max_age: 90
+  compress: true
+
+minio:
+  endpoint: ""  # Set via MINIO_ENDPOINT environment variable
+  access_key: ""  # Set via MINIO_ACCESS_KEY environment variable
+  secret_key: ""  # Set via MINIO_SECRET_KEY environment variable
+  bucket: starbyte
+  use_ssl: true
+
+# 漏测先用校园网 IP；service/frontend 留空则按请求 Host 自动拼。
+# 有域名后再设 CAS_SERVICE_URL / CAS_FRONTEND_URL，或继续留空走访问地址。
+cas:
+  enabled: true
+  server_url: "https://authserver.smbu.edu.cn/authserver"
+  service_url: ""
+  frontend_url: ""
+  # 未知 CAS 用户走注册绑定；部署时请保持 CAS_ALLOW_AUTO_PROVISION=false。
+  allow_auto_provision: false
+  default_role: member
+
+cors:
+  allowed_origins:
+    - "https://starbyte.smbu.edu.cn"
+    - "https://starbyte.com"
+    - "https://www.starbyte.com"
+  allowed_methods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "PATCH"
+  allowed_headers:
+    - "Origin"
+    - "Content-Type"
+    - "Accept"
+    - "Authorization"
+    - "X-Request-Id"
+  allow_credentials: true
